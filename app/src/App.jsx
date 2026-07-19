@@ -57,6 +57,9 @@ export default function App() {
     smoothPoint: null,
     grab: null,
     undoStack: [],
+    pendingGesture: null,   // candidate gesture waiting to be confirmed
+    pendingCount: 0,        // how many consecutive frames it's been seen
+    confirmedGesture: "idle",
   });
 
   // React-rendered UI state
@@ -172,8 +175,13 @@ export default function App() {
 
   const classify = (lm) => {
     const palm = dist(lm[0], lm[9]) || 1;
-    if (dist(lm[4], lm[8]) / palm < 0.35) return "move";
     const [index, middle, ring, pinky] = fingersUp(lm);
+    const pinchDist = dist(lm[4], lm[8]) / palm;
+
+    // Only treat as pinch/move when index ISN'T actively pointing (drawing pose).
+    // Prevents a stroke from flipping to "move" when thumb briefly nears index tip.
+    if (pinchDist < 0.25 && !index) return "move";
+
     const count = [index, middle, ring, pinky].filter(Boolean).length;
     if (count === 0) return "idle";
     if (index && !middle && !ring && !pinky) return "draw";
@@ -289,7 +297,22 @@ export default function App() {
     }
 
     const lm = results.multiHandLandmarks[0];
-    const gestureName = classify(lm);
+    const rawGesture = classify(lm);
+
+    // Debounce: require 3 consecutive frames of the same gesture before switching.
+    // This stops a single noisy frame (e.g. thumb briefly nearing index during
+    // a downstroke) from hijacking an in-progress draw/erase action.
+    const REQUIRED_FRAMES = 3;
+    if (rawGesture === s.pendingGesture) {
+      s.pendingCount += 1;
+    } else {
+      s.pendingGesture = rawGesture;
+      s.pendingCount = 1;
+    }
+    if (s.pendingCount >= REQUIRED_FRAMES) {
+      s.confirmedGesture = rawGesture;
+    }
+    const gestureName = s.confirmedGesture;
 
     const t = gestureName === "move"
       ? { x: (lm[4].x + lm[8].x) / 2, y: (lm[4].y + lm[8].y) / 2 }
